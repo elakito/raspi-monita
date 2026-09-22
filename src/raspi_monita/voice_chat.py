@@ -15,10 +15,13 @@ from google import genai
 from google.genai import errors, types
 from piper import PiperVoice
 
+# --- Constants ---
+JSON_RS = "\x1e"
+
 # --- Configuration ---
 RATE = 16000          # 16kHz for accurate speech recognition
 CHANNELS = 1          # Mono recording
-HISTORY_FILE = ".voice_chat_history.json"
+HISTORY_FILE = ".voice_chat_history.jsons"
 DEFAULT_MODEL_NAME = "gemini-3.5-flash-lite"
 DEFAULT_TTS_NAME = "piper"
 
@@ -139,8 +142,11 @@ def load_history() -> list[types.Content]:
     try:
         with open(HISTORY_FILE, "r", encoding="utf-8") as f:
             # Extract the raw text block from the model's response
-            saved_data = json.load(f)
-        return [types.Content(**msg) for msg in saved_data]
+            return [
+                types.Content(**json.loads(entry))
+                for entry in f.read().split(JSON_RS)
+                if entry.strip()
+            ]
     except Exception:  # noqa: BLE001
         raw_print("[⚠️] Error reading history file. Starting fresh.", file=sys.stderr)
         return []
@@ -171,7 +177,11 @@ def save_history(chat_session):
             serializable_history.append({"role": "model", "parts": [{"text": assistant_text}]})
 
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(serializable_history, f, indent=4)
+        for entry in serializable_history:
+            f.write(JSON_RS)
+            json.dump(entry, f)
+            f.write("\n")
+
 
 def speak_text_via_espeak(text, lang, speed, pitch, gap):
     """Speaks a text using espeak-ng."""
