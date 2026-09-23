@@ -10,3 +10,4 @@ __pycache__/
 # ignore downloaded piper model resources
 resources/piper/*
 !resources/piper/.gitkeep
+!resources/piper/manifest.toml
