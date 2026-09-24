@@ -8,6 +8,7 @@ import sys
 import termios
 import time
 import tty
+from enum import Enum
 from pathlib import Path
 
 import httpx
@@ -51,6 +52,7 @@ chat_schema = types.Schema(
     },
     required=["language_user", "language_model", "transcription", "response"],
 )
+
 class RealTimeVoiceManager:
     def __init__(self, model_dir):
         self.model_dir = model_dir
@@ -124,16 +126,26 @@ class RealTimeVoiceManager:
         
         raw_print("[🐒️] Done speaking.", flush=True)
 
-def raw_print(*args, **kwargs):
+
+class UserAction(Enum):
+    SUBMIT = 1
+    REPLAY = 2
+    CANCEL = 3
+    TERMINATE = 4
+
+
+def raw_print(*args, **kwargs) -> None:
     # Join arguments into a string and replace \n with \r\n
     output = " ".join(map(str, args)).replace("\n", "\r\n")
     print(output, end="\r\n", **kwargs)
 
-def is_key_waiting():
+
+def is_key_waiting() -> bool:
     """Checks standard input instantly. Returns True if a key was pushed."""
     # Arguments: [inputs to watch], [outputs], [exceptions], timeout (0 = do not block)
     ready_to_read, _, _ = select.select([sys.stdin], [], [], 0.0)
     return len(ready_to_read) > 0
+
 
 def load_history() -> list[types.Content]:
     """Loads saved history logs and transforms them into SDK Content structural objects."""
@@ -151,7 +163,8 @@ def load_history() -> list[types.Content]:
         raw_print("[⚠️] Error reading history file. Starting fresh.", file=sys.stderr)
         return []
 
-def save_history(chat_session):
+
+def save_history(chat_session) -> None:
     """Extracts history logs from the active chat state and pushes them to local JSON storage."""
     serializable_history = []
     raw_history = chat_session.get_history()
@@ -191,17 +204,19 @@ def speak_text_via_espeak(text, lang, speed, pitch, gap):
     except subprocess.CalledProcessError as e:
         raw_print(f"Error executing espeak-ng: {e}", file=sys.stderr)
 
+
 def speak_text_via_piper(text, lang):
     """Speaks a text using piper."""
     voice_manager.speak_live(text,lang_code=lang)
 
 
-def record_audio():
+def record_audio(is_first_time) -> tuple[UserAction, list]:
     """Records sound via native ALSA utilities, controlled entirely via the Enter key."""
-    raw_print("\nPress [Space] to start/stop recording, [c] to cancel recording, [q] to quit")
+    raw_print("\nPress [Space] to start/stop recording, [c] to cancel recording,[r] to replay, [q] to quit")
 
     process = None
-    audio_frames = []    
+    audio_frames = []
+    user_action = UserAction.SUBMIT
     # Continuous lookahead checking for the Enter key press
     while True:
         if is_key_waiting():
@@ -235,17 +250,27 @@ def record_audio():
                     process.terminate()
                     process.wait()
                     process = None
-                    audio_frames = []
+                    audio_frames = None
+                    user_action = UserAction.CANCEL
                     break
                 else:
-                    raw_print("\n[❓️] Not in recording.")
+                    raw_print("\n[❓️] Not in recording, nothing to cancel.")
             elif key.lower() == 'q':
                 raw_print("\n[⬛️] Shutting down pipeline.")
                 audio_frames = None
+                user_action = UserAction.TERMINATE
                 break
+            elif key.lower() == 'r':
+                if is_first_time:
+                    raw_print("\n[❓️] Nothing recorded yet, nothing to replay.")
+                else:
+                    raw_print("\n[🔁️] Replaying the audio.")
+                    audio_frames = None
+                    user_action = UserAction.REPLAY
+                    break
             else:
                 # Safely ignore any unmapped keys the user accidentally hits
-                pass
+                raw_print(f"\n[❓️] Unrecognized key: {key.lower()}.")
 
         if process:
             # Collect streaming data blocks from the binary pipeline pipe
@@ -254,7 +279,8 @@ def record_audio():
                 audio_frames.append(chunk)
 
         time.sleep(0.5)
-    return audio_frames
+    return (user_action, audio_frames)
+
 
 def main(args):
     global client, voice_manager
@@ -300,50 +326,55 @@ def main(args):
         # Puts the terminal into raw mode so keystrokes bypass line buffering
         tty.setraw(fd)
 
+        latest_response = None
+        latest_language_model = None
         while True:
             # 4. Record voice data and send them to Gemini API
             # Gather voice byte profile natively
-            audio_frames = record_audio()
-            if audio_frames is None:
+            user_action, audio_frames = record_audio(latest_response == None)
+            if user_action == UserAction.TERMINATE:
                 # terminated
                 break
-            if not audio_frames:
+            if user_action == UserAction.CANCEL:
                 # canceled
                 continue
-            audio_bytes = b''.join(audio_frames)
-            if not audio_bytes or len(audio_bytes) < 44:  # 44 bytes is a standard blank WAV header size
-                raw_print("\n[⚠️] Audio stream too short. Please try again.")
-                continue
+            if user_action == UserAction.SUBMIT:
+                audio_bytes = b''.join(audio_frames)
+                if not audio_bytes or len(audio_bytes) < 44:  # 44 bytes is a standard blank WAV header size
+                    raw_print("\n[⚠️] Audio stream too short. Please try again.")
+                    continue
 
-            raw_print("\n[🚀️] Transmitting voice data payload to Gemini API...")
-            audio_part = types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav")
+                raw_print("\n[🚀️] Transmitting voice data payload to Gemini API...")
+                audio_part = types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav")
 
-            try:
-                # Send message through the stateful chat engine
-                # We guide the model to process the audio payload natively
-                response = chat.send_message([
-                    "Listen to this audio snippet. Transcribe it and address the core request directly.", 
-                    audio_part
-                ])
-            except errors.APIError as e:
-                raw_print(f"\n[💩️] Something went wrong: {e.code} {e.message}")
-                speak_text_via_piper(e.message, "en")
-                continue
-            except httpx.TransportError as e:
-                raw_print(f"\n[💩️] Transport failure: {e}")
-                speak_text_via_piper(str(e), "en")
-                continue
-            
-            raw_print("\n[🤖️] Gemini Response:")
-            raw_print(response.text)
-            raw_print("=" * 40)
-            response_obj = json.loads(response.text)
+                try:
+                    # Send message through the stateful chat engine
+                    # We guide the model to process the audio payload natively
+                    response = chat.send_message([
+                        "Listen to this audio snippet. Transcribe it and address the core request directly.", 
+                        audio_part
+                    ])
+                except errors.APIError as e:
+                    raw_print(f"\n[💩️] Something went wrong: {e.code} {e.message}")
+                    speak_text_via_piper(e.message, "en")
+                    continue
+                except httpx.TransportError as e:
+                    raw_print(f"\n[💩️] Transport failure: {e}")
+                    speak_text_via_piper(str(e), "en")
+                    continue
+
+                raw_print("\n[🤖️] Gemini Response:")
+                raw_print(response.text)
+                raw_print("=" * 40)
+                response_obj = json.loads(response.text)
+                latest_response = response_obj['response']
+                latest_language_model = response_obj['language_model']
 
             # 5. Generate the audio response using TTS
             if args.tts == "piper":
-                speak_text_via_piper(response_obj['response'], response_obj['language_model'])
+                speak_text_via_piper(latest_response, latest_language_model)
             elif args.tts == "espeak":
-                speak_text_via_espeak(response_obj['response'], response_obj['language_model'], 140, 60, 3)
+                speak_text_via_espeak(latest_response, latest_language_model, 140, 60, 3)
 
             # 6. Synchronize conversation timeline directly to disk
             save_history(chat)
