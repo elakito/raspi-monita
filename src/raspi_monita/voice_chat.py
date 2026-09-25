@@ -154,42 +154,36 @@ def load_history() -> list[types.Content]:
     try:
         with open(HISTORY_FILE, "r", encoding="utf-8") as f:
             # Extract the raw text block from the model's response
-            return [
-                types.Content(**json.loads(entry))
-                for entry in f.read().split(JSON_RS)
-                if entry.strip()
-            ]
+            return [types.Content(**json.loads(entry))
+                    for entry in f.read().split(JSON_RS)
+                    if entry.strip()
+                ]
     except Exception:  # noqa: BLE001
         raw_print("[⚠️] Error reading history file. Starting fresh.", file=sys.stderr)
         return []
 
 
-def save_history(chat_session) -> None:
-    """Extracts history logs from the active chat state and pushes them to local JSON storage."""
+def append_history(chat_session) -> None:
+    """Extracts the most recent history log entries from the active chat state and appends them to local JSON-Sequence storage."""
+
     serializable_history = []
-    raw_history = chat_session.get_history()
-    for i in range(0, len(raw_history), 2):
-        # Ensure we have a complete pair to analyze
-        if i + 1 < len(raw_history):
-            message_pair = raw_history[i:i+2]
-            # Ignore the user's request with the audio part
-            # Extract the raw text block from the model's response
-            model_text = "".join([p.text for p in message_pair[1].parts if hasattr(p, 'text')])
-            try:
-                # Unpack the structured JSON payload from the model turn
-                data = json.loads(model_text)
-                user_text = data.get("transcription", "[Audio Prompt]")
-                assistant_text = data.get("response", model_text)
-            except (json.JSONDecodeError, TypeError):
-                # Fallback if the data is not in JSON formattext
-                user_text = "[Audio Prompt]"
-                assistant_text = model_text
+    message_pair = chat_session.get_history()[-2:]
+    model_text = "".join([p.text for p in message_pair[1].parts if hasattr(p, 'text')])
+    try:
+        # Unpack the structured JSON payload from the model turn
+        data = json.loads(model_text)
+        user_text = data.get("transcription", "[Audio Prompt]")
+        assistant_text = data.get("response", model_text)
+    except (json.JSONDecodeError, TypeError):
+        # Fallback if the data is not in JSON formattext
+        user_text = "[Audio Prompt]"
+        assistant_text = model_text
 
-            # Append the polished, classic interaction format entries to our list
-            serializable_history.append({"role": "user", "parts": [{"text": user_text}]})
-            serializable_history.append({"role": "model", "parts": [{"text": assistant_text}]})
+    # Append the polished, classic interaction format entries to our list
+    serializable_history.append({"role": "user", "parts": [{"text": user_text}]})
+    serializable_history.append({"role": "model", "parts": [{"text": assistant_text}]})
 
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+    with open(HISTORY_FILE, "a", encoding="utf-8") as f:
         for entry in serializable_history:
             f.write(JSON_RS)
             json.dump(entry, f)
@@ -313,7 +307,6 @@ def main(args):
             response_schema=chat_schema,          # Enforces the specific key-value pairs
             system_instruction=(
                 "Your name is Kuraspi. You are a witty, friendly, and highly capable Linux desktop voice assistant. "
-                "Reply in the user's detected language. Only change languages if the user explicitly requests it. "
                 "Never use robotic text placeholders or brackets like '[Insert Date Here]'. "
                 "If the user asks you for real-time information (like the current time, date, or weather) "
                 "and your Google Search tool is disabled, reply with a charming, natural human response, "
@@ -351,7 +344,7 @@ def main(args):
                     # Send message through the stateful chat engine
                     # We guide the model to process the audio payload natively
                     response = chat.send_message([
-                        "Listen to this audio snippet. Transcribe it and address the core request directly.", 
+                        "Listen to this audio snippet. Transcribe it and address the core request directly in the detected language or in the language explicitly requested.", 
                         audio_part
                     ])
                 except errors.APIError as e:
@@ -377,7 +370,7 @@ def main(args):
                 speak_text_via_espeak(latest_response, latest_language_model, 140, 60, 3)
 
             # 6. Synchronize conversation timeline directly to disk
-            save_history(chat)
+            append_history(chat)
             time.sleep(0.5)
             
     except KeyboardInterrupt:
