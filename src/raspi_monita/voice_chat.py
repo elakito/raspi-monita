@@ -17,7 +17,7 @@ from google.genai import errors, types
 from piper import PiperVoice
 
 # --- Constants ---
-JSON_RS = "\x1e"
+JSON_RS = "\x1e"      # json record separator
 
 # --- Configuration ---
 RATE = 16000          # 16kHz for accurate speech recognition
@@ -87,7 +87,12 @@ class RealTimeVoiceManager:
 
     def speak_live(self, text, lang_code):
         """Synthesizes text and pipes raw audio bytes directly into aplay."""
-        voice = self._get_voice(lang_code)
+        try:
+            voice = self._get_voice(lang_code)
+        except ValueError as e:
+            raw_print(f"[⚠️] Error unsupported language detected. {e}", file=sys.stderr)
+            text = str(e)
+            voice = self._get_voice('en')
         
         # Get the exact sample rate required by the loaded voice model
         sample_rate = voice.config.sample_rate
@@ -204,6 +209,29 @@ def speak_text_via_piper(text, lang):
     voice_manager.speak_live(text,lang_code=lang)
 
 
+def append_recording(proc, frames, terminating=False) -> None:
+    while True:
+        ready_to_read, _, _ = select.select([proc.stdout], [], [], 0.0)
+        if ready_to_read:
+            chunk = proc.stdout.read(4096)
+            if not chunk:  # EOF
+                break
+            if frames is not None:
+                frames.append(chunk)
+        elif not terminating or proc.poll() is not None:
+            break
+    # drain any leftovers until the process terminates and append them
+    if terminating:
+        leftovers = None
+        try:
+            leftovers, _ = proc.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            leftovers, _ = proc.communicate()
+        if frames is not None and leftovers:
+            frames.append(leftovers)
+
+
 def record_audio(is_first_time) -> tuple[UserAction, list]:
     """Records sound via native ALSA utilities, controlled entirely via the Enter key."""
     raw_print("\nPress [Space] to start/stop recording, [c] to cancel recording,[r] to replay, [q] to quit")
@@ -215,18 +243,14 @@ def record_audio(is_first_time) -> tuple[UserAction, list]:
     while True:
         if is_key_waiting():
             # Code halts here until exactly one key is pushed
-            key = sys.stdin.read(1)
+            key = sys.stdin.read(1).lower()
             if key == ' ':
                 if process:
                     raw_print("\n[🟩️] Recorded.")
                     # Safe teardown of the system process
                     process.terminate()
-                    process.wait()
-                    # Drain any lingering audio fragments from the stream
-                    leftovers = process.stdout.read()
+                    append_recording(process, audio_frames, True)
                     process = None
-                    if leftovers:
-                        audio_frames.append(leftovers)
                     break
                 else:
                     raw_print("\n[🔴️] Recording... Press [SPACE] again to STOP.")
@@ -237,24 +261,27 @@ def record_audio(is_first_time) -> tuple[UserAction, list]:
                         stderr=subprocess.DEVNULL,
                         restore_signals=True
                     )
-            elif key.lower() == 'c':
+            elif key == 'c':
                 if process:
                     raw_print("\n[❌️] Recording canceled.")
                     # Safe teardown of the system process
                     process.terminate()
-                    process.wait()
+                    append_recording(process, None, True)
                     process = None
                     audio_frames = None
                     user_action = UserAction.CANCEL
                     break
                 else:
                     raw_print("\n[❓️] Not in recording, nothing to cancel.")
-            elif key.lower() == 'q':
+            elif key == 'q':
                 raw_print("\n[⬛️] Shutting down pipeline.")
+                if process:
+                    process.terminate()
+                    append_recording(process, None, True)
                 audio_frames = None
                 user_action = UserAction.TERMINATE
                 break
-            elif key.lower() == 'r':
+            elif key == 'r':
                 if is_first_time:
                     raw_print("\n[❓️] Nothing recorded yet, nothing to replay.")
                 else:
@@ -267,10 +294,7 @@ def record_audio(is_first_time) -> tuple[UserAction, list]:
                 raw_print(f"\n[❓️] Unrecognized key: {key.lower()}.")
 
         if process:
-            # Collect streaming data blocks from the binary pipeline pipe
-            chunk = process.stdout.read(1024)
-            if chunk:
-                audio_frames.append(chunk)
+            append_recording(process, audio_frames)
 
         time.sleep(0.5)
     return (user_action, audio_frames)
