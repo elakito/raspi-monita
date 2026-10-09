@@ -234,7 +234,7 @@ def append_recording(proc, frames, terminating=False) -> None:
 
 def record_audio(is_first_time) -> tuple[UserAction, list]:
     """Records sound via native ALSA utilities, controlled entirely via the Enter key."""
-    raw_print("\nPress [Space] to start/stop recording, [c] to cancel recording,[r] to replay, [q] to quit")
+    raw_print("\nPress [SPACE] to start/stop recording, [c] to cancel recording,[r] to replay, [q] to quit")
 
     process = None
     audio_frames = []
@@ -253,7 +253,7 @@ def record_audio(is_first_time) -> tuple[UserAction, list]:
                     process = None
                     break
                 else:
-                    raw_print("\n[🔴️] Recording... Press [SPACE] again to STOP.")
+                    raw_print("\n[🔴️] Recording... Press [SPACE] again to stop or [c] to cancel.")
                     # Fire up arecord as a non-root background stream running to stdout (-)
                     process = subprocess.Popen(
                         ['arecord', '-t', 'wav', '-f', 'S16_LE', '-r', str(RATE), '-c', str(CHANNELS), '-'],
