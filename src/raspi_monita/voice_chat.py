@@ -10,11 +10,13 @@ import time
 import tty
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 import httpx
+import yaml
 from google import genai
 from google.genai import errors, types
-from piper import PiperVoice
+from piper import PiperVoice, SynthesisConfig
 
 # --- Constants ---
 JSON_RS = "\x1e"      # json record separator
@@ -22,9 +24,11 @@ JSON_RS = "\x1e"      # json record separator
 # --- Configuration ---
 RATE = 16000          # 16kHz for accurate speech recognition
 CHANNELS = 1          # Mono recording
+SPEED_CHANGE_UNIT = 1.1
 HISTORY_FILE = ".voice_chat_history.jsons"
 DEFAULT_MODEL_NAME = "gemini-3.5-flash-lite"
 DEFAULT_TTS_NAME = "piper"
+DEFAULT_CONFIG_NAME = "default"
 
 client = None
 voice_manager = None
@@ -85,7 +89,7 @@ class RealTimeVoiceManager:
             
         return self.loaded_voices[lang_code]
 
-    def speak_live(self, text, lang_code):
+    def speak_live(self, text, lang_code, speed):
         """Synthesizes text and pipes raw audio bytes directly into aplay."""
         try:
             voice = self._get_voice(lang_code)
@@ -115,11 +119,12 @@ class RealTimeVoiceManager:
         
         # Open the audio subprocess pipeline
         player = subprocess.Popen(aplay_command, stdin=subprocess.PIPE)
-        
+
         raw_print("[🐵️] Speaking...", flush=True)
         try:
             # synthesize_stream yields raw PCM audio bytes with ultra-low latency
-            for audio_chunk in voice.synthesize(text):
+            syn_config = SynthesisConfig(length_scale=speed)
+            for audio_chunk in voice.synthesize(text, syn_config=syn_config):
                 # Send the generated sound segment directly into aplay's mouth
                 player.stdin.write(audio_chunk.audio_int16_bytes)
                 player.stdin.flush()
@@ -136,7 +141,10 @@ class UserAction(Enum):
     SUBMIT = 1
     REPLAY = 2
     CANCEL = 3
-    TERMINATE = 4
+    FASTER = 4
+    SLOWER = 5
+    NORMAL = 6
+    TERMINATE = 7
 
 
 def raw_print(*args, **kwargs) -> None:
@@ -150,6 +158,21 @@ def is_key_waiting() -> bool:
     # Arguments: [inputs to watch], [outputs], [exceptions], timeout (0 = do not block)
     ready_to_read, _, _ = select.select([sys.stdin], [], [], 0.0)
     return len(ready_to_read) > 0
+
+def override_config(key, value, default_value, conf):
+    if value != DEFAULT_MODEL_NAME or key not in conf:
+        conf[key] = value
+
+def read_config(config_dir, args) -> dict[str, Any]:
+    config_path = config_dir / f"{args.config}.yaml"
+    with config_path.open(encoding="utf-8") as f:
+        conf = yaml.safe_load(f)
+    override_config("model_name", args.model, DEFAULT_MODEL_NAME, conf)
+    override_config("tts_name", args.tts, DEFAULT_TTS_NAME, conf)
+    override_config("audio_rate", str(RATE), str(RATE), conf)
+    override_config("audio_channels", str(CHANNELS), str(CHANNELS), conf)
+
+    return conf
 
 
 def load_history() -> list[types.Content]:
@@ -204,9 +227,9 @@ def speak_text_via_espeak(text, lang, speed, pitch, gap):
         raw_print(f"Error executing espeak-ng: {e}", file=sys.stderr)
 
 
-def speak_text_via_piper(text, lang):
+def speak_text_via_piper(text, lang, speed):
     """Speaks a text using piper."""
-    voice_manager.speak_live(text,lang_code=lang)
+    voice_manager.speak_live(text,lang_code=lang, speed=speed)
 
 
 def append_recording(proc, frames, terminating=False) -> None:
@@ -263,7 +286,6 @@ def record_audio(is_first_time) -> tuple[UserAction, list]:
                     )
             elif key == 'c':
                 if process:
-                    raw_print("\n[❌️] Recording canceled.")
                     # Safe teardown of the system process
                     process.terminate()
                     append_recording(process, None, True)
@@ -274,7 +296,6 @@ def record_audio(is_first_time) -> tuple[UserAction, list]:
                 else:
                     raw_print("\n[❓️] Not in recording, nothing to cancel.")
             elif key == 'q':
-                raw_print("\n[⬛️] Shutting down pipeline.")
                 if process:
                     process.terminate()
                     append_recording(process, None, True)
@@ -284,10 +305,29 @@ def record_audio(is_first_time) -> tuple[UserAction, list]:
             elif key == 'r':
                 if is_first_time:
                     raw_print("\n[❓️] Nothing recorded yet, nothing to replay.")
+                elif process:
+                    raw_print("\n[❓️] Recording in progress, no replaying.")
                 else:
-                    raw_print("\n[🔁️] Replaying the audio.")
                     audio_frames = None
                     user_action = UserAction.REPLAY
+                    break
+            elif key == '<':
+                if process:
+                    raw_print("\n[❓️] Recording in progress.")
+                else:
+                    user_action = UserAction.SLOWER
+                    break
+            elif key == '>':
+                if process:
+                    raw_print("\n[❓️] Recording in progress.")
+                else:
+                    user_action = UserAction.FASTER
+                    break
+            elif key == '=':
+                if process:
+                    raw_print("\n[❓️] Recording in progress.")
+                else:
+                    user_action = UserAction.NORMAL
                     break
             else:
                 # Safely ignore any unmapped keys the user accidentally hits
@@ -308,8 +348,15 @@ def main(args):
         print("Error: GEMINI_API_KEY is not set", file=sys.stderr)
         sys.exit(1)
 
-    # project_root/src/raspi-monita -> project_root/resources/piper
-    model_dir = Path(__file__).resolve().parent.parent.parent / "resources" / "piper"
+    # project_root/src/raspi-monita -> project_root/resources
+    resource_dir = Path(__file__).resolve().parent.parent.parent / "resources"
+    config_dir = resource_dir  / "config"
+    model_dir = resource_dir  / "piper"
+
+    # config
+    conf = read_config(config_dir, args)
+
+    # gemini client, voice manager
     client = genai.Client()
     voice_manager = RealTimeVoiceManager(model_dir)
 
@@ -329,15 +376,7 @@ def main(args):
         config=types.GenerateContentConfig(
             response_mime_type="application/json", # Tells the API to format as JSON
             response_schema=chat_schema,          # Enforces the specific key-value pairs
-            system_instruction=(
-                "Your name is Kuraspi. You are a witty, friendly, and highly capable Linux desktop multilingual voice assistant. "
-                "Never use robotic text placeholders or brackets like '[Insert Date Here]'. "
-                "Listen to the user's audio snippet, detect the spoken language, and respond in the detected language or in the language explicitly requested. "
-                "Do not automatically default to English. "
-                "If the user asks you for real-time information (like the current time, date, or weather) "
-                "and your Google Search tool is disabled, reply with a charming, natural human response, "
-                "such as admitting you don't have a watch on you or that you can't look out the window right now."
-            )
+            system_instruction=conf["system_instruction"]
         )
     )
     
@@ -347,15 +386,30 @@ def main(args):
 
         latest_response = None
         latest_language_model = None
+        speech_speed = 1.0
         while True:
             # 4. Record voice data and send them to Gemini API
             # Gather voice byte profile natively
             user_action, audio_frames = record_audio(latest_response == None)
             if user_action == UserAction.TERMINATE:
                 # terminated
+                raw_print("\n[⬛️] Shutting down pipeline.")
                 break
             if user_action == UserAction.CANCEL:
                 # canceled
+                raw_print("\n[❌️] Recording canceled.")
+                continue
+            if user_action == UserAction.SLOWER:
+                speech_speed = speech_speed / SPEED_CHANGE_UNIT
+                raw_print(f"\n[⬇️️] Speech speed decreased to to {speech_speed:.2f}.")
+                continue
+            if user_action == UserAction.FASTER:
+                speech_speed = speech_speed * SPEED_CHANGE_UNIT
+                raw_print(f"\n[⬆️️] Speech speed increased to {speech_speed:.2f}.")
+                continue
+            if user_action == UserAction.NORMAL:
+                speech_speed = 1.0
+                raw_print(f"\n[↩️️️] Speech speed reset to {speech_speed:.2f}.")
                 continue
             if user_action == UserAction.SUBMIT:
                 audio_bytes = b''.join(audio_frames)
@@ -370,16 +424,16 @@ def main(args):
                     # Send message through the stateful chat engine
                     # We guide the model to process the audio payload natively
                     response = chat.send_message([
-                        "Listen to this audio snippet. Transcribe it and address the core request directly in the detected language or in the language explicitly requested.", 
+                        conf["prompt_instruction"],
                         audio_part
                     ])
                 except errors.APIError as e:
                     raw_print(f"\n[💩️] Something went wrong: {e.code} {e.message}")
-                    speak_text_via_piper(e.message, "en")
+                    speak_text_via_piper(e.message, "en", 1.0)
                     continue
                 except httpx.TransportError as e:
                     raw_print(f"\n[💩️] Transport failure: {e}")
-                    speak_text_via_piper(str(e), "en")
+                    speak_text_via_piper(str(e), "en", 1.0)
                     continue
 
                 raw_print("\n[🤖️] Gemini Response:")
@@ -388,12 +442,14 @@ def main(args):
                 response_obj = json.loads(response.text)
                 latest_response = response_obj['response']
                 latest_language_model = response_obj['language_model']
+            elif user_action == UserAction.REPLAY:
+                raw_print("\n[🔁️] Replaying the audio.")
 
             # 5. Generate the audio response using TTS
             if args.tts == "piper":
-                speak_text_via_piper(latest_response, latest_language_model)
+                speak_text_via_piper(latest_response, latest_language_model, 1.0/speech_speed)
             elif args.tts == "espeak":
-                speak_text_via_espeak(latest_response, latest_language_model, 140, 60, 3)
+                speak_text_via_espeak(latest_response, latest_language_model, int(140*speech_speed), 60, 3)
 
             # 6. Synchronize conversation timeline directly to disk
             append_history(chat)
@@ -411,6 +467,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Voice Chat Assistant")
     parser.add_argument("--model", default=DEFAULT_MODEL_NAME, help="Model Name (default: %(default)s)")
     parser.add_argument("--tts", default=DEFAULT_TTS_NAME, choices={"piper", "espeak"}, help="TTS to use (default: %(default)s)")
+    parser.add_argument("--config", default=DEFAULT_CONFIG_NAME, help="Configuration Name (default %(default)s)")
     args = parser.parse_args()
 
     main(args)
