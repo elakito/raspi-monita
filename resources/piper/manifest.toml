@@ -20,6 +20,15 @@ model_sha256 = "401369c4a81d09fdd86c32c5c864440811dbdcc66466cde2d64f7133a66ad03b
 config_sha256 = "aa965a2f02ecced632c2694e1fc72bbff6d65f265fab567ca945918c73dd89f4"
 
 [[voices]]
+id = "en_US-amy-medium"
+language = "en"
+locale = "en_US"
+speaker = "amy"
+quality = "medium"
+model_sha256 = "b3a6e47b57b8c7fbe6a0ce2518161a50f59a9cdd8a50835c02cb02bdd6206c18"
+config_sha256 = "95a23eb4d42909d38df73bb9ac7f45f597dbfcde2d1bf9526fdeaf5466977d77"
+
+[[voices]]
 id = "es_ES-sharvard-medium"
 language = "es"
 locale = "es_ES"
