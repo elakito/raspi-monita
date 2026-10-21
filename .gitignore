@@ -5,7 +5,7 @@ __pycache__/
 .ruff_cache/
 
 # ignore chat history
-.voice_chat_history.jsons
+.voice_chat_history_*.jsons
 
 # ignore downloaded piper model resources
 resources/piper/*

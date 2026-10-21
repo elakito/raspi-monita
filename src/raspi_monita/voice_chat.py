@@ -25,7 +25,7 @@ JSON_RS = "\x1e"      # json record separator
 RATE = 16000          # 16kHz for accurate speech recognition
 CHANNELS = 1          # Mono recording
 SPEED_CHANGE_UNIT = 1.1
-HISTORY_FILE = ".voice_chat_history.jsons"
+HISTORY_FILE_PREFIX = ".voice_chat_history"
 DEFAULT_MODEL_NAME = "gemini-3.5-flash-lite"
 DEFAULT_TTS_NAME = "piper"
 DEFAULT_CONFIG_NAME = "default"
@@ -175,12 +175,13 @@ def read_config(config_dir, args) -> dict[str, Any]:
     return conf
 
 
-def load_history() -> list[types.Content]:
+def load_history(name) -> list[types.Content]:
     """Loads saved history logs and transforms them into SDK Content structural objects."""
-    if not os.path.exists(HISTORY_FILE):
+    history_file = f"{HISTORY_FILE_PREFIX}_{name}.jsons"
+    if not os.path.exists(history_file):
         return []
     try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+        with open(history_file, "r", encoding="utf-8") as f:
             # Extract the raw text block from the model's response
             return [types.Content(**json.loads(entry))
                     for entry in f.read().split(JSON_RS)
@@ -191,9 +192,10 @@ def load_history() -> list[types.Content]:
         return []
 
 
-def append_history(chat_session) -> None:
+def append_history(name, chat_session) -> None:
     """Extracts the most recent history log entries from the active chat state and appends them to local JSON-Sequence storage."""
 
+    history_file = f"{HISTORY_FILE_PREFIX}_{name}.jsons"
     serializable_history = []
     message_pair = chat_session.get_history()[-2:]
     model_text = "".join([p.text for p in message_pair[1].parts if hasattr(p, 'text')])
@@ -211,7 +213,7 @@ def append_history(chat_session) -> None:
     serializable_history.append({"role": "user", "parts": [{"text": user_text}]})
     serializable_history.append({"role": "model", "parts": [{"text": assistant_text}]})
 
-    with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+    with open(history_file, "a", encoding="utf-8") as f:
         for entry in serializable_history:
             f.write(JSON_RS)
             json.dump(entry, f)
@@ -365,7 +367,7 @@ def main(args):
     old_settings = termios.tcgetattr(fd)
 
     # 2. Re-hydrate any chat threads from a past run
-    past_history = load_history()
+    past_history = load_history(args.config)
     if past_history:
         raw_print(f"[🔄️] Resumed past conversation context ({len(past_history)} messages parsed).")
 
@@ -452,7 +454,7 @@ def main(args):
                 speak_text_via_espeak(latest_response, latest_language_model, int(140*speech_speed), 60, 3)
 
             # 6. Synchronize conversation timeline directly to disk
-            append_history(chat)
+            append_history(args.config, chat)
             time.sleep(0.5)
             
     except KeyboardInterrupt:
