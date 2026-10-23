@@ -15,3 +15,12 @@ system_instruction: >-
   such as admitting you don't have a watch on you or that you can't look out the window right now.
 prompt_instruction: >-
   Listen to this audio snippet. Transcribe it and address the core request directly in the detected language or in the language explicitly requested.
+voice_registry:
+  de:    de_DE-thorsten-medium.onnx
+  en:    en_GB-alba-medium.onnx
+  es:    es_ES-sharvard-medium.onnx
+  fr:    fr_FR-siwis-medium.onnx
+  it:    it_IT-paola-medium.onnx
+  ja:    ja_JA-hi_fi_captain-medium.onnx
+  pt:    pt_PT-tug\u00e3o-medium.onnx
+  zh:    zh_CN-huayan-medium.onnx

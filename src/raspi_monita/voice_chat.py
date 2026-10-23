@@ -26,10 +26,14 @@ RATE = 16000          # 16kHz for accurate speech recognition
 CHANNELS = 1          # Mono recording
 SPEED_CHANGE_UNIT = 1.1
 HISTORY_FILE_PREFIX = ".voice_chat_history"
+
+# --- Default configuration values ---
 DEFAULT_MODEL_NAME = "gemini-3.5-flash-lite"
 DEFAULT_TTS_NAME = "piper"
 DEFAULT_CONFIG_NAME = "default"
+DEFAULT_VOICE_REGISTRY = {"en":    "en_GB-alba-medium.onnx"}
 
+# --- Global instances ---
 client = None
 voice_manager = None
 
@@ -58,23 +62,11 @@ chat_schema = types.Schema(
 )
 
 class RealTimeVoiceManager:
-    def __init__(self, model_dir):
+    def __init__(self, model_dir, voice_registry):
         self.model_dir = model_dir
         self.loaded_voices = {}
         
-        # Mapping of your verified local Piper models
-        # voices found in https://huggingface.co/rhasspy/piper-voices/tree/main
-        self.voice_registry = {
-            "de":    "de_DE-kerstin-low.onnx",
-            "en":    "en_GB-alba-medium.onnx",
-            "es":    "es_ES-sharvard-medium.onnx",
-            "fr":    "fr_FR-siwis-medium.onnx",
-            "it":    "it_IT-paola-medium.onnx",
-            "ja":    "ja_JA-hi_fi_captain-medium.onnx",
-            "pt":    "pt_PT-tug\u00e3o-medium.onnx",
-            "zh":    "zh_CN-huayan-medium.onnx"
-        }
-
+        self.voice_registry = voice_registry
     def _get_voice(self, lang_code):
         if lang_code not in self.voice_registry:
             raise ValueError(f"Language '{lang_code}' is not supported.")
@@ -159,19 +151,25 @@ def is_key_waiting() -> bool:
     ready_to_read, _, _ = select.select([sys.stdin], [], [], 0.0)
     return len(ready_to_read) > 0
 
-def override_config(key, value, default_value, conf):
-    if value != DEFAULT_MODEL_NAME or key not in conf:
+
+def update_config(key, value, default_value, conf):
+    """Updates the configuration parameter if missing or be overriden."""
+    if key not in conf:
+        conf[key] = default_value
+    if value is not None and value != conf[key]:
         conf[key] = value
 
+
 def read_config(config_dir, args) -> dict[str, Any]:
+    """Read the configuration parameters from the file and updates the parameters if missing or being overriden."""
     config_path = config_dir / f"{args.config}.yaml"
     with config_path.open(encoding="utf-8") as f:
         conf = yaml.safe_load(f)
-    override_config("model_name", args.model, DEFAULT_MODEL_NAME, conf)
-    override_config("tts_name", args.tts, DEFAULT_TTS_NAME, conf)
-    override_config("audio_rate", str(RATE), str(RATE), conf)
-    override_config("audio_channels", str(CHANNELS), str(CHANNELS), conf)
-
+    update_config("model_name", args.model, DEFAULT_MODEL_NAME, conf)
+    update_config("tts_name", args.tts, DEFAULT_TTS_NAME, conf)
+    update_config("audio_rate", None, str(RATE), conf)
+    update_config("audio_channels", None, str(CHANNELS), conf)
+    update_config("voice_registry", None, DEFAULT_VOICE_REGISTRY, conf)
     return conf
 
 
@@ -341,7 +339,6 @@ def record_audio(is_first_time) -> tuple[UserAction, list]:
         time.sleep(0.5)
     return (user_action, audio_frames)
 
-
 def main(args):
     global client, voice_manager
     print("=== Voice Chat Assistant Initialized ===")
@@ -360,7 +357,7 @@ def main(args):
 
     # gemini client, voice manager
     client = genai.Client()
-    voice_manager = RealTimeVoiceManager(model_dir)
+    voice_manager = RealTimeVoiceManager(model_dir, conf["voice_registry"])
 
     # 1. Save original terminal settings so we can fix the console on exit
     fd = sys.stdin.fileno()
