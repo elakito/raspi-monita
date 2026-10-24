@@ -4,7 +4,7 @@
 
 ## Installation
 
-### Setting up the required environment and installing required libraries
+### Setting up the required environment and installing the required libraries
 
 ```
 python -m venv .venv
@@ -50,6 +50,11 @@ config_sha256 = ""
 
 ## Running the program
 
+Get a Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey), then set it as the `GEMINI_API_KEY` environment variable.
+```
+export GEMINI_API_KEY=...
+```
+To start the program, run the following command.
 ```
 python -m raspi_monita.voice_chat
 ```
