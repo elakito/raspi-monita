@@ -1,5 +1,6 @@
 import hashlib
 import os
+import sys
 import tempfile
 import tomllib
 import urllib.request
@@ -21,7 +22,14 @@ def voice_path(voice: dict) -> Path:
 
     return directory / f"{voice['locale']}-{voice['speaker']}-{voice['quality']}.onnx"
 
+
+def warn_unset_sha256(id: str, model_name: str, actual_sha256: str):
+    t = "config" if model_name.endswith("json") else "model"
+    print(f"WARNING: {t}_sha256 not set for {id}, it must be set to {actual_sha256.lower()}")
+
+
 def download_verified(
+    id: str,
     url: str,
     target_dir: Path,
     expected_sha256: str,
@@ -31,8 +39,11 @@ def download_verified(
     destination = target_dir / model_name
 
     if destination.exists():
-        actual = sha256_file(destination)
-        if actual.lower() == expected_sha256.lower():
+        actual_sha256 = sha256_file(destination)
+        if not expected_sha256:
+            warn_unset_sha256(id, model_name, actual_sha256)
+            return
+        elif actual_sha256.lower() == expected_sha256.lower():
             print(f"Already downloaded: {destination}")
             return
 
@@ -51,7 +62,9 @@ def download_verified(
                     temporary.write(chunk)
                     digest.update(chunk)
             actual_sha256 = digest.hexdigest()
-            if actual_sha256.lower() != expected_sha256.lower():
+            if not expected_sha256:
+                warn_unset_sha256(id, model_name, actual_sha256)
+            elif actual_sha256.lower() != expected_sha256.lower():
                 raise ValueError(f"SHA-256 mismatch for {url}")
 
             temporary.flush()
@@ -69,13 +82,16 @@ def download_voice(manifest: dict, voice: dict, target_dir: Path) -> None:
     model_url = f"{base_url}/{model_path}"
     config_url = f"{base_url}/{model_path}.json"
 
+    id = voice["id"]
     download_verified(
+        id,
         model_url,
         target_dir,
         voice["model_sha256"],
     )
 
     download_verified(
+        id,
         config_url,
         target_dir,
         voice["config_sha256"],
@@ -90,4 +106,7 @@ with manifest_path.open("rb") as f:
     manifest = tomllib.load(f)
 
 for voice in manifest["voices"]:
-    download_voice(manifest, voice, target_dir)
+    try:
+        download_voice(manifest, voice, target_dir)
+    except Exception as e:
+        print(f"Error: Failed to download the model for {voice['id']}: {e}", file=sys.stderr)
