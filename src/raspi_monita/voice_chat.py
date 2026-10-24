@@ -136,7 +136,8 @@ class UserAction(Enum):
     FASTER = 4
     SLOWER = 5
     NORMAL = 6
-    TERMINATE = 7
+    INVALID = 7
+    TERMINATE = 8
 
 
 def raw_print(*args, **kwargs) -> None:
@@ -257,7 +258,7 @@ def append_recording(proc, frames, terminating=False) -> None:
 
 def record_audio(is_first_time) -> tuple[UserAction, list]:
     """Records sound via native ALSA utilities, controlled entirely via the Enter key."""
-    raw_print("\nPress [SPACE] to start/stop recording, [c] to cancel recording,[r] to replay, [q] to quit")
+    raw_print("\nPress [SPACE] to start/stop recording, [c] to cancel recording,[r] to replay, [<] to speak slower, [>] faster, [=] normal, [q] to quit")
 
     process = None
     audio_frames = []
@@ -295,6 +296,8 @@ def record_audio(is_first_time) -> tuple[UserAction, list]:
                     break
                 else:
                     raw_print("\n[❓️] Not in recording, nothing to cancel.")
+                    user_action = UserAction.INVALID
+                    break
             elif key == 'q':
                 if process:
                     process.terminate()
@@ -305,6 +308,8 @@ def record_audio(is_first_time) -> tuple[UserAction, list]:
             elif key == 'r':
                 if is_first_time:
                     raw_print("\n[❓️] Nothing recorded yet, nothing to replay.")
+                    user_action = UserAction.INVALID
+                    break
                 elif process:
                     raw_print("\n[❓️] Recording in progress, no replaying.")
                 else:
@@ -332,6 +337,8 @@ def record_audio(is_first_time) -> tuple[UserAction, list]:
             else:
                 # Safely ignore any unmapped keys the user accidentally hits
                 raw_print(f"\n[❓️] Unrecognized key: {key.lower()}.")
+                user_action = UserAction.INVALID
+                break
 
         if process:
             append_recording(process, audio_frames)
@@ -378,7 +385,7 @@ def main(args):
             system_instruction=conf["system_instruction"]
         )
     )
-    
+    b
     try:
         # Puts the terminal into raw mode so keystrokes bypass line buffering
         tty.setraw(fd)
@@ -409,6 +416,8 @@ def main(args):
             if user_action == UserAction.NORMAL:
                 speech_speed = 1.0
                 raw_print(f"\n[↩️️️] Speech speed reset to {speech_speed:.2f}.")
+                continue
+            if user_action == UserAction.INVALID:
                 continue
             if user_action == UserAction.SUBMIT:
                 audio_bytes = b''.join(audio_frames)
@@ -445,13 +454,15 @@ def main(args):
                 raw_print("\n[🔁️] Replaying the audio.")
 
             # 5. Generate the audio response using TTS
-            if args.tts == "piper":
+            tts_name = conf["tts_name"]
+            if tts_name == "piper":
                 speak_text_via_piper(latest_response, latest_language_model, 1.0/speech_speed)
-            elif args.tts == "espeak":
+            elif tts_name == "espeak":
                 speak_text_via_espeak(latest_response, latest_language_model, int(140*speech_speed), 60, 3)
 
-            # 6. Synchronize conversation timeline directly to disk
-            append_history(args.config, chat)
+            if user_action == UserAction.SUBMIT:
+                # 6. Synchronize conversation timeline directly to disk
+                append_history(args.config, chat, latest_language_model)
             time.sleep(0.5)
             
     except KeyboardInterrupt:
