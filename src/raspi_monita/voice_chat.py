@@ -385,7 +385,7 @@ def main(args):
             system_instruction=conf["system_instruction"]
         )
     )
-    b
+
     try:
         # Puts the terminal into raw mode so keystrokes bypass line buffering
         tty.setraw(fd)
@@ -462,7 +462,7 @@ def main(args):
 
             if user_action == UserAction.SUBMIT:
                 # 6. Synchronize conversation timeline directly to disk
-                append_history(args.config, chat, latest_language_model)
+                append_history(args.config, chat)
             time.sleep(0.5)
             
     except KeyboardInterrupt:
