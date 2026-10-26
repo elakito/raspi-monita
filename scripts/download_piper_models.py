@@ -108,5 +108,5 @@ with manifest_path.open("rb") as f:
 for voice in manifest["voices"]:
     try:
         download_voice(manifest, voice, target_dir)
-    except Exception as e:
+    except Exception as e:   # noqa: BLE001
         print(f"Error: Failed to download the model for {voice['id']}: {e}", file=sys.stderr)
