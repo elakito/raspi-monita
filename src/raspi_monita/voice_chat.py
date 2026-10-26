@@ -174,24 +174,25 @@ def read_config(config_dir, args) -> dict[str, Any]:
     return conf
 
 
-def load_history(name) -> list[types.Content]:
+def load_history(name) -> tuple[list[types.Content], str, str]:
     """Loads saved history logs and transforms them into SDK Content structural objects."""
     history_file = f"{HISTORY_FILE_PREFIX}_{name}.jsons"
     if not os.path.exists(history_file):
-        return []
+        return [], None, None
     try:
         with open(history_file, "r", encoding="utf-8") as f:
             # Extract the raw text block from the model's response
-            return [types.Content(**json.loads(entry))
-                    for entry in f.read().split(JSON_RS)
-                    if entry.strip()
-                ]
+            raw_history = [json.loads(entry)
+                           for entry in f.read().split(JSON_RS)
+                           if entry.strip()]
+            return [types.Content(role=entry["role"], parts=[{"text": entry["text"]}]) for entry in raw_history], *((raw_history[-1]["text"], raw_history[-1]["language"]) if raw_history else (None, None))
+
     except Exception:  # noqa: BLE001
         raw_print("[⚠️] Error reading history file. Starting fresh.", file=sys.stderr)
-        return []
+        return [], None, None
 
 
-def append_history(name, chat_session) -> None:
+def append_history(name, chat_session, language_user, language_model) -> None:
     """Extracts the most recent history log entries from the active chat state and appends them to local JSON-Sequence storage."""
 
     history_file = f"{HISTORY_FILE_PREFIX}_{name}.jsons"
@@ -202,15 +203,14 @@ def append_history(name, chat_session) -> None:
         # Unpack the structured JSON payload from the model turn
         data = json.loads(model_text)
         user_text = data.get("transcription", "[Audio Prompt]")
-        assistant_text = data.get("response", model_text)
+        model_text = data.get("response", model_text)
     except (json.JSONDecodeError, TypeError):
-        # Fallback if the data is not in JSON formattext
+        # Fallback if the data is not in JSON format
         user_text = "[Audio Prompt]"
-        assistant_text = model_text
 
     # Append the polished, classic interaction format entries to our list
-    serializable_history.append({"role": "user", "parts": [{"text": user_text}]})
-    serializable_history.append({"role": "model", "parts": [{"text": assistant_text}]})
+    serializable_history.append({"role": "user", "text": user_text, "language": language_user})
+    serializable_history.append({"role": "model", "text": model_text, "language": language_model})
 
     with open(history_file, "a", encoding="utf-8") as f:
         for entry in serializable_history:
@@ -371,7 +371,7 @@ def main(args):
     old_settings = termios.tcgetattr(fd)
 
     # 2. Re-hydrate any chat threads from a past run
-    past_history = load_history(args.config)
+    past_history, latest_response, latest_language_model = load_history(args.config)
     if past_history:
         raw_print(f"[🔄️] Resumed past conversation context ({len(past_history)} messages parsed).")
 
@@ -390,8 +390,7 @@ def main(args):
         # Puts the terminal into raw mode so keystrokes bypass line buffering
         tty.setraw(fd)
 
-        latest_response = None
-        latest_language_model = None
+        latest_language_user = None
         speech_speed = 1.0
         while True:
             # 4. Record voice data and send them to Gemini API
@@ -450,6 +449,7 @@ def main(args):
                 response_obj = json.loads(response.text)
                 latest_response = response_obj['response']
                 latest_language_model = response_obj['language_model']
+                latest_language_user = response_obj['language_user']
             elif user_action == UserAction.REPLAY:
                 raw_print("\n[🔁️] Replaying the audio.")
 
@@ -462,9 +462,9 @@ def main(args):
 
             if user_action == UserAction.SUBMIT:
                 # 6. Synchronize conversation timeline directly to disk
-                append_history(args.config, chat)
+                append_history(args.config, chat, latest_language_user, latest_language_model)
             time.sleep(0.5)
-            
+
     except KeyboardInterrupt:
         raw_print("\n[👋️] Session terminated.")
     finally:
